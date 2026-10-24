@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChEqMath - Chemical Equilibria Mathematics</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>ChEqMath</h1>
+    <span class="sub">Chemical Equilibria Mathematics · especiação em solução aquosa · modelo componentes–espécies · I = 0 · 25 °C</span>
+  </header>
+  <main>
+    <aside class="panel">
+      <section>
+        <h2>Tipos de equilíbrio</h2>
+        <label><input type="checkbox" name="kind" value="ABB" checked> Ácido-base (ABB)</label>
+        <label><input type="checkbox" name="kind" value="complex" checked> Complexação</label>
+        <label><input type="checkbox" name="kind" value="S0" checked> Solubilidade (S0)</label>
+      </section>
+      <section>
+        <h2>Componentes e totais (mol L⁻¹)</h2>
+        <input id="filter" placeholder="filtrar…">
+        <div id="comp-list" class="comp-list"></div>
+        <p class="hint">H⁺ (0002): total de prótons, positivo para ácido e negativo para base.
+          Para uma faixa de pH, use “Curva”.</p>
+      </section>
+      <section>
+        <h2>Faixa de pH</h2>
+        <label>mín <input id="ph-min" type="number" value="0" step="0.1"></label>
+        <label>máx <input id="ph-max" type="number" value="14" step="0.1"></label>
+        <label>pontos <input id="ph-points" type="number" value="281" min="2" max="2001"></label>
+        <label>referência <select id="ref"></select></label>
+      </section>
+      <section class="buttons">
+        <button id="btn-curve">Curva de distribuição vs pH</button>
+        <button id="btn-point">Ponto (totais informados)</button>
+        <button id="btn-mc">Incerteza (Monte Carlo)</button>
+        <label>σ log β <input id="mc-sd" type="number" value="0.05" step="0.01" min="0"></label>
+      </section>
+    </aside>
+    <section class="results">
+      <div id="status"></div>
+      <div id="plot-dist" class="plot"></div>
+      <div id="plot-ht" class="plot"></div>
+      <div id="point-result"></div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

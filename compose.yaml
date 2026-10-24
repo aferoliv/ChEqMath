@@ -1,0 +1,18 @@
+name: cheqmath
+
+services:
+  api:
+    build: ./backend
+    volumes:
+      - ./data:/app/data        # planilha de entrada e banco SQLite gerado
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - "8090:80"               # 8080 costuma estar ocupada por outros projetos
+    depends_on:
+      - api
+    restart: unless-stopped
