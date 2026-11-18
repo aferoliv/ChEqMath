@@ -1,10 +1,12 @@
 FROM python:3.11-slim
 
 WORKDIR /app
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app ./app
+COPY backend/app ./app
+# Planilha copiada no build (o banco SQLite e gerado dentro do container ao iniciar)
+COPY data/componentes_e_especies_ChEq_Math.xlsx ./data/
 
 ENV PYTHONUNBUFFERED=1 \
     DB_PATH=/app/data/speciation.sqlite \

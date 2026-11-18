@@ -27,10 +27,29 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def list_components(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute(
-        "SELECT code, name, smiles, is_solvent FROM components ORDER BY name COLLATE NOCASE"
-    ).fetchall()
+def list_categories(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT DISTINCT category FROM component_categories ORDER BY category").fetchall()
+    return [r["category"] for r in rows]
+
+
+def list_components(conn: sqlite3.Connection, categories: list[str] | None = None) -> list[dict]:
+    """Componentes em ordem alfabética, sem repetição.
+
+    categories=None ou vazio: todos. Caso contrário: união das categorias escolhidas
+    (um componente com várias categorias aparece uma única vez).
+    """
+    if not categories:
+        rows = conn.execute(
+            "SELECT code, name, is_solvent, charge_max, charge FROM components ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+    else:
+        marks = ",".join("?" for _ in categories)
+        rows = conn.execute(
+            f"SELECT DISTINCT c.code, c.name, c.is_solvent, c.charge_max, c.charge FROM components c "
+            f"JOIN component_categories cc ON cc.comp_code = c.code "
+            f"WHERE cc.category IN ({marks}) ORDER BY c.name COLLATE NOCASE",
+            categories,
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -59,5 +78,16 @@ def all_species() -> tuple:
     conn = connect()
     try:
         return tuple(load_species(conn))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=1)
+def component_charges() -> dict:
+    """{código do componente: z} (só componentes com carga conhecida)."""
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT code, charge FROM components WHERE charge IS NOT NULL").fetchall()
+        return {r["code"]: int(r["charge"]) for r in rows}
     finally:
         conn.close()

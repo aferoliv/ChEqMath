@@ -15,7 +15,18 @@ Convenções
     - H+ (0002) é o componente de referência do pH. Seu total T_H+ pode ser negativo
       (adição de base) e, no modo de pH fixo, é calculado a partir da solução.
 
-Unidades: concentrações em mol L⁻¹; pH = −log10(a_H+).
+Atividade (opcional, ver ActivityModel)
+    a_i = γ_i · c_i, com γ_i pela equação de Debye–Hückel estendida:
+        log10 γ_i = −A · z_i² · √I / (1 + B · å_i · √I)
+        I = ½ Σ c_k z_k²  (componentes livres + espécies aquosas; sólidos e água excluídos)
+    As constantes β são termodinâmicas (I = 0). Com γ fixo, a lei de ação das massas em
+    concentração fica
+        ln c_i = ln β_i + Σ_j ν_ij (ln [C_j] + ln γ_j) − ln γ_i
+    e o Newton (em ln [C_j]) é o mesmo do caso ideal, com ln β_i corrigido. A força iônica é
+    resolvida por iteração externa de ponto fixo (I → γ → solução → I), ou fixada pelo
+    usuário (meio iônico).
+
+Unidades: concentrações em mol L⁻¹; pH = −log10(a_H+). Valores em `fixed` são atividades.
 """
 from __future__ import annotations
 
@@ -29,6 +40,11 @@ LN10 = math.log(10.0)
 SOLVENT = "0001"  # água
 PROTON = "0002"   # H+: referência do pH
 SCALE_FLOOR = 1e-6  # piso para normalizar resíduos de balanço (mol L⁻¹)
+# Debye–Hückel, água a 25 °C (Truesdell & Jones, 1974; Helgeson, 1969)
+DH_A = 0.5091      # kg^½ mol^-½  (≈ L^½ mol^-½ em solução diluída)
+DH_B = 0.3283      # kg^½ mol^-½ Å⁻¹
+DH_ION_SIZE = 4.5  # Å, å padrão quando não há valor específico
+DH_I_LIMIT = 0.1   # mol L⁻¹, limite usual de validade da DH estendida
 WATER_CONC = 55.6  # mol L⁻¹, concentração molar da água usada nas constantes da planilha
 
 
@@ -73,6 +89,45 @@ class Species:
         return {c for c, _ in self.nu if c != SOLVENT}
 
 
+@dataclass(frozen=True)
+class ActivityModel:
+    """Modelo de coeficientes de atividade.
+
+    model         : 'ideal' (γ = 1) ou 'dh_ext' (Debye–Hückel estendida).
+    charges       : {código do componente: z}. A carga de cada espécie é Σ ν_ij z_j.
+    ion_size      : å padrão (Å).
+    ion_sizes     : {código de componente ou espécie: å (Å)}, sobrepõe o padrão.
+    ionic_strength: I fixa (mol L⁻¹, meio iônico). None = calculada da solução.
+    """
+    model: str = "ideal"
+    charges: dict = field(default_factory=dict)
+    ion_size: float = DH_ION_SIZE
+    ion_sizes: dict = field(default_factory=dict)
+    ionic_strength: Optional[float] = None
+    A: float = DH_A
+    B: float = DH_B
+
+    @property
+    def active(self) -> bool:
+        return self.model == "dh_ext"
+
+    def log10_gamma(self, z: np.ndarray, size: np.ndarray, I: float) -> np.ndarray:
+        if not self.active or I <= 0.0:
+            return np.zeros_like(z, dtype=float)
+        sI = math.sqrt(I)
+        return -self.A * z * z * sI / (1.0 + self.B * size * sI)
+
+
+IDEAL = ActivityModel()
+
+
+def debye_huckel_log_gamma(z: float, I: float, size: float = DH_ION_SIZE,
+                           A: float = DH_A, B: float = DH_B) -> float:
+    """log10 γ pela Debye–Hückel estendida (função escalar, útil para conferência)."""
+    sI = math.sqrt(max(I, 0.0))
+    return -A * z * z * sI / (1.0 + B * size * sI)
+
+
 @dataclass
 class Result:
     ph: Optional[float]
@@ -84,6 +139,14 @@ class Result:
     residual: float       # máx |balanço|/escala e |saturação| no ponto final
     iterations: int
     active_caps: list = field(default_factory=list)
+    converged: bool = True
+    message: str = ""
+    dissolved: dict = field(default_factory=dict)  # total dissolvido por componente (sem sólido)
+    ionic_strength: float = 0.0        # I (mol L⁻¹), calculada ou fixada
+    log_gamma: dict = field(default_factory=dict)  # log10 γ por componente e espécie aquosa
+    activity_model: str = "ideal"
+    I_iterations: int = 0
+    warnings: list = field(default_factory=list)
 
 
 def select_species(species, allowed, kinds=None, codes=None):
@@ -110,13 +173,16 @@ def _maxabs(a: np.ndarray) -> float:
     return float(np.max(np.abs(a))) if a.size else 0.0
 
 
-def solve(species, totals, fixed=None, tol=1e-11, maxit=200, max_outer=30) -> Result:
+def solve(species, totals, fixed=None, tol=1e-11, maxit=200, max_outer=30,
+          activity: Optional[ActivityModel] = None, I_tol=1e-10, max_I_iter=100) -> Result:
     """Resolve o equilíbrio para os totais dados.
 
-    totals : {código: T_j} em mol L⁻¹ (H+ pode ser negativo).
-    fixed  : {código: atividade} para componentes com a dimensão fixada (ex.: H+ por pH).
+    totals  : {código: T_j} em mol L⁻¹ (H+ pode ser negativo).
+    fixed   : {código: atividade} para componentes com a dimensão fixada (ex.: H+ por pH).
+    activity: modelo de atividade (padrão: ideal, γ = 1).
     Lança ValueError (entrada inválida) ou RuntimeError (não convergiu).
     """
+    activity = activity or IDEAL
     fixed = {j: float(v) for j, v in (fixed or {}).items()}
     if any(v <= 0 for v in fixed.values()):
         raise ValueError("valores fixos (atividades) devem ser > 0")
@@ -155,6 +221,36 @@ def solve(species, totals, fixed=None, tol=1e-11, maxit=200, max_outer=30) -> Re
                 Nc[k, cidx[j]] = nu
     tgt = np.array([aq_idx[c.cap_of] for c in caps], dtype=int)
     lnSo = np.array([c.log_beta * LN10 for c in caps], dtype=float)
+
+    # --- atividade: cargas e tamanhos iônicos -------------------------------------
+    lnB0, lnfix0, lnSo0 = lnB.copy(), lnfix.copy(), lnSo.copy()
+    use_act = activity.active
+    if use_act:
+        missing = [j for j in comps if j not in activity.charges]
+        if missing:
+            raise ValueError(f"Debye–Hückel: carga desconhecida para o(s) componente(s) {missing}")
+        if activity.ionic_strength is not None and activity.ionic_strength < 0:
+            raise ValueError("força iônica fixa deve ser ≥ 0")
+    zc = np.array([float(activity.charges.get(j, 0)) for j in comps])
+    zq = Nq @ zc
+    sz = activity.ion_sizes
+    ac = np.array([float(sz.get(j, activity.ion_size)) for j in comps])
+    aq_size = np.array([float(sz.get(s.code, activity.ion_size)) for s in aq])
+    lnfc = np.zeros(len(comps))
+    lnfq = np.zeros(len(aq))
+
+    def apply_gamma(I):
+        """Atualiza ln β, ln[C]_fixo e ln So para γ(I); devolve (lnfc, lnfq)."""
+        nonlocal lnB, lnfix, lnSo
+        fc = activity.log10_gamma(zc, ac, I) * LN10
+        fq = activity.log10_gamma(zq, aq_size, I) * LN10
+        lnB = lnB0 + Nq @ fc - fq
+        lnfix = lnfix0 - fc[fidx] if fidx.size else lnfix0
+        lnSo = lnSo0 - fq[tgt] if tgt.size else lnSo0
+        return fc, fq
+
+    def ionic_strength(x, c):
+        return 0.5 * (float(np.sum(x * zc * zc)) + float(np.sum(c * zq * zq)))
 
     def lnx_full(u):
         lnx = np.zeros(len(comps))
@@ -222,33 +318,61 @@ def solve(species, totals, fixed=None, tol=1e-11, maxit=200, max_outer=30) -> Re
                     break
                 lam *= 0.5
             u, m, F, G, c, x, res = un, mn, Fn, Gn, cn, xn, resn
-        raise RuntimeError(f"não convergiu em {maxit} iterações (resíduo {res:.2e})")
+        flags["ok"] = False  # devolve o último iterado; o chamador decide o que fazer
+        return u, m, res, maxit
+
+    def active_set(u, m, act):
+        its = 0
+        for _ in range(max_outer):
+            flags["ok"] = True
+            u, m, _, its = newton(u, m, act)
+            new_act, new_m = [], []
+            for k, mv in zip(act, m):
+                if mv >= -1e-15:
+                    new_act.append(k)
+                    new_m.append(mv)
+            changed = len(new_act) != len(act)
+            act, m = new_act, np.array(new_m, dtype=float)
+            lnc_now = lnB + Nq @ lnx_full(u)
+            for k in range(len(caps)):
+                if k not in act and lnc_now[tgt[k]] > lnSo[k] + 1e-9:
+                    act.append(k)
+                    m = np.append(m, 0.0)
+                    changed = True
+            if not changed:
+                break
+        else:
+            raise RuntimeError("conjunto de sólidos ativos não estabilizou")
+        return u, m, act, its
 
     # Conjunto ativo de sólidos: começa vazio; adiciona S0 supersaturados e
-    # remove os que ficam com m < 0.
+    # remove os que ficam com m < 0. Com Debye–Hückel, laço externo em I.
     act: list = []
+    flags = {"ok": True}
     m = np.zeros(0)
     u = np.log(np.maximum(np.abs(Tu), SCALE_FLOOR)) if Tu.size else np.zeros(0)
-    its = 0
-    for _ in range(max_outer):
-        u, m, _, its = newton(u, m, act)
-        new_act, new_m = [], []
-        for k, mv in zip(act, m):
-            if mv >= -1e-15:
-                new_act.append(k)
-                new_m.append(mv)
-        changed = len(new_act) != len(act)
-        act, m = new_act, np.array(new_m, dtype=float)
-        lnc_now = lnB + Nq @ lnx_full(u)
-        for k in range(len(caps)):
-            if k not in act and lnc_now[tgt[k]] > lnSo[k] + 1e-9:
-                act.append(k)
-                m = np.append(m, 0.0)
-                changed = True
-        if not changed:
-            break
+    I = 0.0
+    I_its = 0
+    if use_act and activity.ionic_strength is not None:
+        I = float(activity.ionic_strength)
+        lnfc, lnfq = apply_gamma(I)
+        u, m, act, its = active_set(u, m, act)
+        I_its = 1
+    elif use_act:
+        u, m, act, its = active_set(u, m, act)          # 1ª passada: γ = 1
+        for I_its in range(1, max_I_iter + 1):
+            lnx = lnx_full(u)
+            I_new = ionic_strength(np.exp(lnx), np.exp(lnB + Nq @ lnx))
+            if abs(I_new - I) <= I_tol + 1e-8 * I_new:
+                I = I_new
+                break
+            I = I_new
+            lnfc, lnfq = apply_gamma(I)
+            u, m, act, its = active_set(u, m, act)
+        else:
+            raise RuntimeError(f"força iônica não convergiu em {max_I_iter} iterações (I = {I:.4g} mol/L)")
     else:
-        raise RuntimeError("conjunto de sólidos ativos não estabilizou")
+        u, m, act, its = active_set(u, m, act)
 
     F, G, c, x, _ = evaluate(u, m, act)
     res = _maxabs(scaled(F, G))
@@ -260,22 +384,30 @@ def solve(species, totals, fixed=None, tol=1e-11, maxit=200, max_outer=30) -> Re
     species_c = {s.code: float(c[i]) for i, s in enumerate(aq)}
     solids = {caps[k].code: float(mv) for k, mv in zip(act, m)}
     impl = {j: float(implied[cidx[j]]) for j in comps}
-    ph = -math.log10(free[PROTON]) if PROTON in free else None
+    ph = None
+    if PROTON in free:
+        ph = -(math.log10(free[PROTON]) + lnfc[cidx[PROTON]] / LN10)   # pH = −log a_H+
+    if not use_act:
+        I = ionic_strength(x, c)  # informativa (γ = 1)
+    log_gamma = {j: float(lnfc[cidx[j]] / LN10) for j in comps}
+    log_gamma.update({s.code: float(lnfq[i] / LN10) for i, s in enumerate(aq)})
+    warnings = []
+    if use_act and I > DH_I_LIMIT:
+        warnings.append(f"I = {I:.3g} mol/L > {DH_I_LIMIT} mol/L: Debye–Hückel estendida fora da faixa usual")
 
+    # Distribuição só com espécies dissolvidas: denominador = total dissolvido de cada componente
+    # (componente livre + espécies aquosas), sem o sólido precipitado.
+    dissolved = {j: float(x[cidx[j]] + np.dot(Nq[:, cidx[j]], c)) for j in comps}
     fractions = {}
     for j in comps:
         if j in fixed or float(totals.get(j, 0.0)) == 0.0:
             continue
-        Tj = float(totals[j])
+        Td = dissolved[j]
+        if Td <= 0.0:
+            continue
         cj = cidx[j]
-        fr = {}
-        for i, s in enumerate(aq):
-            if Nq[i, cj] != 0:
-                fr[s.code] = float(Nq[i, cj] * c[i] / Tj)
-        for k, mv in zip(act, m):
-            if Nc[k, cj] != 0:
-                fr[caps[k].code] = float(Nc[k, cj] * mv / Tj)
-        fractions[j] = fr
+        fractions[j] = {s.code: float(Nq[i, cj] * c[i] / Td)
+                        for i, s in enumerate(aq) if Nq[i, cj] != 0}
 
     return Result(
         ph=ph,
@@ -284,14 +416,22 @@ def solve(species, totals, fixed=None, tol=1e-11, maxit=200, max_outer=30) -> Re
         solids=solids,
         implied_totals=impl,
         fractions=fractions,
+        dissolved=dissolved,
         residual=res,
         iterations=its,
         active_caps=[caps[k].code for k in act],
+        converged=flags["ok"],
+        message="" if flags["ok"] else f"não convergiu em {maxit} iterações (resíduo {res:.3e})",
+        ionic_strength=float(I),
+        log_gamma=log_gamma,
+        activity_model=activity.model,
+        I_iterations=I_its,
+        warnings=warnings,
     )
 
 
-def ph_curve(species, totals, ph_values, ref=None):
-    """Varre o pH com H+ fixo. `totals` são os ligantes/metais (sem H+).
+def ph_curve(species, totals, ph_values, ref=None, activity: Optional[ActivityModel] = None):
+    """Varre o pH com a_H+ fixa. `totals` são os ligantes/metais (sem H+).
 
     Retorna concentrações, frações relativas ao componente `ref` e o total de H+
     implícito (prótons adicionados, mol L⁻¹, negativo para base) em cada pH.
@@ -306,23 +446,31 @@ def ph_curve(species, totals, ph_values, ref=None):
         "ref": ref,
         "species": {c: [] for c in aq_codes},
         "fractions": {c: [] for c in aq_codes},
+        "free": [],  # fração do componente livre (ref) em relação ao total
         "solids": {c: [] for c in cap_codes},
         "H_total": [],
         "residual": [],
+        "ionic_strength": [],
     }
     for ph in ph_values:
-        r = solve(species, totals, fixed={PROTON: 10.0 ** (-float(ph))})
+        r = solve(species, totals, fixed={PROTON: 10.0 ** (-float(ph))}, activity=activity)
+        if not r.converged:
+            raise RuntimeError(r.message)
         for c in aq_codes:
             out["species"][c].append(r.species.get(c, 0.0))
             out["fractions"][c].append(r.fractions.get(ref, {}).get(c, 0.0))
+        td = r.dissolved.get(ref, 0.0)
+        out["free"].append(r.free.get(ref, 0.0) / td if td > 0 else 0.0)
         for c in cap_codes:
             out["solids"][c].append(r.solids.get(c, 0.0))
         out["H_total"].append(r.implied_totals.get(PROTON, float("nan")))
         out["residual"].append(r.residual)
+        out["ionic_strength"].append(r.ionic_strength)
     return out
 
 
-def monte_carlo(species, totals, fixed=None, sd=0.05, n=300, seed=0):
+def monte_carlo(species, totals, fixed=None, sd=0.05, n=300, seed=0,
+                activity: Optional[ActivityModel] = None):
     """Propagação de incerteza: log β ~ N(log β, sd) em cada espécie (sd em unidades de log10).
 
     O sd não vem da planilha; é um parâmetro do usuário (padrão 0,05).
@@ -335,7 +483,9 @@ def monte_carlo(species, totals, fixed=None, sd=0.05, n=300, seed=0):
             for s in species
         ]
         try:
-            r = solve(pert, totals, fixed)
+            r = solve(pert, totals, fixed, activity=activity)
+            if not r.converged:
+                raise RuntimeError(r.message)
         except (RuntimeError, ValueError, FloatingPointError, OverflowError):
             fails += 1
             continue

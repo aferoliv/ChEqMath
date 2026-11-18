@@ -40,7 +40,20 @@ uvicorn app.main:app --reload --port 8000
 
 ## Convenções
 
-- `a_i = 10^log_β · Π a_j^ν_ij`, com I = 0 (atividade = concentração) e 25 °C.
+- `a_i = 10^log_β · Π a_j^ν_ij`, com constantes termodinâmicas (I = 0) a 25 °C.
+- Atividade: `a_i = γ_i c_i`. Padrão `ideal` (γ = 1). Opção `dh_ext` (Debye–Hückel estendida):
+  `log γ_i = −A z_i² √I / (1 + B å_i √I)`, A = 0,5091 e B = 0,3283 Å⁻¹ (25 °C), å padrão 4,5 Å
+  (ajustável; `ion_sizes` por código). `I = ½ Σ c_k z_k²` é resolvida por ponto fixo externo ao
+  Newton, ou fixada pelo usuário (`ionic_strength`, meio iônico). Aviso quando I > 0,1 mol L⁻¹.
+- `z_i = Σ ν_ij z_j`. **Coluna 'Maximum Electrical Charge' da aba components** (achada pelo
+  cabeçalho; as colunas 'code' e 'category …' também) = carga da espécie totalmente protonada:
+  Cd(II) `2+`, glicina `+`, acetato `0`. Como o componente é a forma totalmente desprotonada,
+  `z_j = q_max − n_H`, com `n_H` = maior entre o nº de pKa da aba pKa e o maior k das espécies
+  HₖX da aba Species (metais: `n_H = 0`). Célula vazia: metal pelo nome, com alerta; demais
+  ficam sem carga e o cálculo com Debye–Hückel os recusa.
+- Íons espectadores (Na⁺, Cl⁻ etc.) só entram em I se forem componentes do sistema; caso
+  contrário, use I fixa.
+- pH = −log a_H+; pH fixo (curva) fixa a **atividade** de H⁺.
 - Balanço de massa: `T_j = [C_j] + Σ ν_ij c_i + Σ ν_sj m_s`.
 - O componente de um ligante é a **forma totalmente desprotonada** (ex.: `0003` = acetato).
 - `0001` é a água (a = 1); `0002` é H⁺, cujo total pode ser negativo (adição de base).

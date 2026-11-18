@@ -10,22 +10,28 @@
 <body>
   <header>
     <h1>ChEqMath</h1>
-    <span class="sub">Chemical Equilibria Mathematics · especiação em solução aquosa · modelo componentes–espécies · I = 0 · 25 °C</span>
+    <span class="sub">Chemical Equilibria Mathematics · especiação em solução aquosa · modelo componentes–espécies · 25 °C</span>
+    <span class="sub" id="version"></span>
   </header>
-  <main>
-    <aside class="panel">
+  <main class="layout">
+    <aside class="panel col-left">
+      <button id="btn-point" class="big-btn" type="button">Calcular nessa Condição</button>
       <section>
-        <h2>Tipos de equilíbrio</h2>
-        <label><input type="checkbox" name="kind" value="ABB" checked> Ácido-base (ABB)</label>
-        <label><input type="checkbox" name="kind" value="complex" checked> Complexação</label>
-        <label><input type="checkbox" name="kind" value="S0" checked> Solubilidade (S0)</label>
+        <h2>Categorias</h2>
+        <details class="dropdown" id="cat-dd">
+          <summary id="cat-summary">Todas as categorias</summary>
+          <div id="cat-box" class="dd-box"></div>
+        </details>
+        <p class="hint">Marque uma ou mais. Um componente com várias categorias aparece uma vez.</p>
       </section>
       <section>
         <h2>Componentes e totais (mol L⁻¹)</h2>
-        <input id="filter" placeholder="filtrar…">
+        <div class="add-row">
+          <select id="comp"></select>
+          <button id="btn-add" type="button">Adicionar</button>
+        </div>
         <div id="comp-list" class="comp-list"></div>
-        <p class="hint">H⁺ (0002): total de prótons, positivo para ácido e negativo para base.
-          Para uma faixa de pH, use “Curva”.</p>
+        <p class="hint">H⁺: total de prótons, positivo para ácido e negativo para base.</p>
       </section>
       <section>
         <h2>Faixa de pH</h2>
@@ -36,16 +42,47 @@
       </section>
       <section class="buttons">
         <button id="btn-curve">Curva de distribuição vs pH</button>
-        <button id="btn-point">Ponto (totais informados)</button>
         <button id="btn-mc">Incerteza (Monte Carlo)</button>
         <label>σ log β <input id="mc-sd" type="number" value="0.05" step="0.01" min="0"></label>
       </section>
     </aside>
+
+    <aside class="panel col-mid">
+      <section>
+        <h2>Tipos de equilíbrio</h2>
+        <label><input type="checkbox" name="kind" value="ABB" checked> Ácido-base (ABB)</label>
+        <label><input type="checkbox" name="kind" value="complex" checked> Complexação</label>
+        <label><input type="checkbox" name="kind" value="S0" checked> Solubilidade (S0)</label>
+      </section>
+      <section>
+        <h2>Coeficientes de atividade</h2>
+        <label><input type="radio" name="act-model" value="ideal" checked> γ = 1 (ideal, sem correção)</label>
+        <label><input type="radio" name="act-model" value="dh_ext" id="dh-on"> Debye–Hückel estendida</label>
+        <label>å padrão (Å) <input id="dh-a" type="number" value="4.5" step="0.1" min="0.1" disabled></label>
+        <label>I fixa (mol L⁻¹) <input id="dh-I" type="number" step="any" min="0" placeholder="calculada" disabled></label>
+        <p class="hint">log γ = −A z² √I / (1 + B å √I); A = 0,5091; B = 0,3283 Å⁻¹ (25 °C).
+          I em branco: calculada da solução.</p>
+      </section>
+    </aside>
+
     <section class="results">
       <div id="status"></div>
+      <div id="point-result"></div>
+      <div class="bar-ctrl">
+        <label><input type="checkbox" id="bar-log" checked> eixo y logarítmico</label>
+        <label>y mín <input id="bar-min" type="number" step="any" placeholder="auto"></label>
+        <label>y máx <input id="bar-max" type="number" step="any" placeholder="auto"></label>
+      </div>
+      <div id="plot-bar" class="plot"></div>
+      <div class="bar-ctrl">
+        <label><input type="checkbox" id="curve-log" checked> eixo y logarítmico (curva)</label>
+        <label>pH mín <input id="curve-xmin" type="number" step="any" placeholder="auto"></label>
+        <label>pH máx <input id="curve-xmax" type="number" step="any" placeholder="auto"></label>
+        <label>y mín <input id="curve-ymin" type="number" step="any" placeholder="auto"></label>
+        <label>y máx <input id="curve-ymax" type="number" step="any" placeholder="auto"></label>
+      </div>
       <div id="plot-dist" class="plot"></div>
       <div id="plot-ht" class="plot"></div>
-      <div id="point-result"></div>
     </section>
   </main>
   <script src="app.js"></script>

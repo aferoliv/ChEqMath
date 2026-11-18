@@ -4,8 +4,16 @@
 CREATE TABLE components (
     code       TEXT PRIMARY KEY,           -- '0002'
     name       TEXT NOT NULL,
-    smiles     TEXT,
-    is_solvent INTEGER NOT NULL DEFAULT 0  -- 1 para a água (a = 1)
+    is_solvent INTEGER NOT NULL DEFAULT 0, -- 1 para a água (a = 1)
+    charge_max INTEGER,                    -- coluna B: carga da espécie totalmente protonada do sistema
+    charge     INTEGER                     -- z_j = q_max − n_H (forma totalmente desprotonada); NULL = desconhecida
+);
+
+-- Categorias de componentes (um componente pode estar em várias; 'all' é expandido pelo importador)
+CREATE TABLE component_categories (
+    comp_code TEXT NOT NULL REFERENCES components(code),
+    category  TEXT NOT NULL,
+    PRIMARY KEY (comp_code, category)
 );
 
 CREATE TABLE species (
@@ -25,14 +33,6 @@ CREATE TABLE stoich (
     comp_code    TEXT NOT NULL REFERENCES components(code),
     nu           INTEGER NOT NULL CHECK (nu <> 0),
     PRIMARY KEY (species_code, comp_code)
-);
-
-CREATE TABLE pka (
-    comp_code TEXT NOT NULL REFERENCES components(code),
-    idx       INTEGER NOT NULL,            -- 1 = menor pKa
-    value     REAL NOT NULL,
-    carga_max INTEGER,
-    PRIMARY KEY (comp_code, idx)
 );
 
 CREATE TABLE import_log (

@@ -12,7 +12,7 @@ if errorlevel 1 (
 :menu
 cls
 echo ===============================================
-echo   ChEqMath - Atualizacao Docker e Pagina
+echo   Especiacao - Atualizacao Docker e Pagina
 echo ===============================================
 echo [1] Atualizar tudo (frontend + backend, sem cache)
 echo [2] Atualizar so frontend
@@ -66,8 +66,10 @@ goto done
 
 :reimport
 echo.
-echo Reimportando a planilha de data\ (o backend reconstroi o banco ao iniciar)...
-docker compose restart api
+echo Reimportando a planilha de data\ (a planilha vai dentro da imagem: rebuild do backend)...
+docker compose build api
+if errorlevel 1 goto fail
+docker compose up -d api
 goto done
 
 :ps

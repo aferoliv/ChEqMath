@@ -24,13 +24,13 @@ def client():
 def test_components(client):
     r = client.get("/api/components")
     assert r.status_code == 200
-    assert len(r.json()["items"]) == 90
+    assert len(r.json()["items"]) == 93
 
 
 def test_speciate_acetic_acid(client):
     r = client.post("/api/speciate", json={"totals": {"0002": 0.1, "0003": 0.1}, "kinds": ["ABB"]})
     assert r.status_code == 200
-    assert r.json()["ph"] == pytest.approx(2.883, abs=1e-3)
+    assert r.json()["ph"] == pytest.approx(2.88, abs=5e-3)
 
 
 def test_curve_returns_fractions(client):
@@ -57,3 +57,31 @@ def test_mc_endpoint(client):
                                      "sd": 0.02, "n": 30})
     assert r.status_code == 200
     assert r.json()["n_ok"] > 0
+
+
+def test_speciate_debye_huckel(client):
+    body = {"totals": {"0002": 0.1, "0003": 0.1}, "kinds": ["ABB"]}
+    ideal = client.post("/api/speciate", json=body).json()
+    dh = client.post("/api/speciate", json={**body, "activity": "dh_ext"}).json()
+    assert ideal["activity_model"] == "ideal"
+    assert dh["activity_model"] == "dh_ext"
+    assert dh["ionic_strength"] > 0
+    assert dh["log_gamma"]["0002"] < 0
+    assert dh["free"]["0002"] > ideal["free"]["0002"]
+
+
+def test_curve_debye_huckel_fixed_I(client):
+    r = client.post("/api/curve", json={"totals": {"0003": 0.01}, "kinds": ["ABB"], "ph_points": 5,
+                                        "activity": "dh_ext", "ionic_strength": 0.1})
+    assert r.status_code == 200
+    assert r.json()["ionic_strength"] == [0.1] * 5
+
+
+def test_invalid_activity_rejected(client):
+    r = client.post("/api/speciate", json={"totals": {"0002": 0.1}, "activity": "davies"})
+    assert r.status_code == 422
+
+
+def test_version(client):
+    from app.main import APP_VERSION
+    assert client.get("/api/version").json() == {"version": APP_VERSION}

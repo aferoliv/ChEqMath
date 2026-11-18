@@ -4,13 +4,23 @@ Regras, de acordo com Teoria.docx:
 - aba 'components': nome (A) e código (C). 0001 = água (solvente).
 - aba 'Species': espécies explícitas. Colunas: nome (A), tipo (B), componentes (C:E),
   coeficientes ν (G:I), log K original (K), log K (L). Usa-se a coluna 'log K' (L).
-- aba 'pKa': para cada ligante, geram-se as espécies protonadas H_k·X = X + k·H+,
-  com log β_k = soma dos k maiores pKa (valores em ordem crescente). Sistemas
-  metálicos (nome com carga, ex.: 'Cd(II)') não são gerados: a hidrólise vem da aba Species.
+- aba 'pKa': NÃO é usada. Serve apenas de apoio ao usuário; todas as espécies vêm da aba Species.
 - Espécies com mesmos componentes e coeficientes são deduplicadas (prevalece a explícita).
-- Consistência de sinal: se a espécie contém água e H+ com ν < 0 (hidrólise), log K deve ser
-  negativo. O hidróxido (água +1, H+ −1) com +15,75 é corrigido para −pKw (25 °C, I = 0).
-  Outros casos inconsistentes são apenas registrados como alerta.
+- Consistência de sinal: casos inconsistentes são apenas registrados como alerta.
+- Carga dos componentes (z_j, para Debye–Hückel). A coluna de carga da aba components
+  (cabeçalho 'Maximum Electrical Charge', ou contendo 'charge'/'carga') traz a
+  CARGA MÁXIMA DO SISTEMA associado ao componente, isto é, a carga da espécie totalmente
+  protonada (Cd(II): '2+'; glicina: '+', de H2Gly+; acetato: '0', de HAc). Aceita '2+',
+  '+', '-', '3-', '+2', '-1', '0' ou número. Como o componente é a forma totalmente
+  desprotonada:
+      z_j = q_max,j − n_H,j
+  com n_H,j = número de prótons ácidos do sistema = maior valor entre (a) o nº de pKa da aba
+  pKa (usada só para isso) e (b) o maior k das espécies de protonação pura HₖX
+  (ν = {X: 1, H+: k}) da aba Species. Metais: n_H = 0 (hidrólise envolve água), z = q_max.
+  Água: 0; H+: +1.
+  As colunas da aba components são localizadas pelo cabeçalho ('code', 'category …').
+  Célula de carga vazia: metal pelo nome ('(II)', '(2+)') com alerta; sem isso, carga desconhecida
+  (NULL) e alerta — o cálculo com Debye–Hückel recusa esse componente.
 
 Uso:
     python -m app.importer [--xlsx CAMINHO] [--db CAMINHO]
@@ -32,6 +42,10 @@ from .engine import PROTON, SOLVENT
 # (ver engine.effective_log_beta). Constantes sem água não são alteradas.
 
 METAL_RE = re.compile(r"\((I{1,3}|\d\+)\)")
+ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6}
+CHARGE_ROMAN_RE = re.compile(r"\(\s*(VI|IV|V|I{1,3})\s*\)")
+CHARGE_PLUS_RE = re.compile(r"\(\s*(\d)\s*\+\s*\)")
+CHARGE_TXT_RE = re.compile(r"^([+-]?)(\d*)([+-]?)$")
 SKIP_SYSTEMS = {"acid - strong", "base - strong", "test"}
 ALIASES = {"acetic acid": "acetate"}  # nome na aba pKa -> nome do componente
 SCHEMA = Path(__file__).with_name("schema.sql")
@@ -75,26 +89,164 @@ def _sign_ok(nu: dict, log_beta: float) -> bool:
 
 @dataclass
 class Built:
-    components: list = field(default_factory=list)  # dicts: code, name, smiles, is_solvent
+    components: list = field(default_factory=list)  # dicts: code, name, is_solvent, charge_max, charge, categories
     species: list = field(default_factory=list)     # dicts: code, name, kind, log_beta, log_beta_raw, nu, cap_of, source, note
-    pka: list = field(default_factory=list)         # dicts: comp_code, idx, value, carga_max
     log: list = field(default_factory=list)         # (nível, mensagem)
 
 
-def _read_components(ws) -> list:
+def _parse_charge(value):
+    """'2+' → 2, '+' → 1, '-' → −1, '3-' → −3, '+2' → 2, '-1' → −1, '0' → 0, 2.0 → 2.
+
+    Vazio → None. Texto inválido → ValueError.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if float(value) != int(value):
+            raise ValueError(f"carga não inteira: {value!r}")
+        return int(value)
+    text = str(value).strip().replace("−", "-").replace(" ", "")
+    if not text:
+        return None
+    m = CHARGE_TXT_RE.match(text)
+    if not m or (m.group(1) and m.group(3)):
+        raise ValueError(f"carga inválida: {value!r}")
+    pre, digits, post = m.groups()
+    sign = pre or post
+    if not digits:
+        if not sign:
+            raise ValueError(f"carga inválida: {value!r}")
+        return 1 if sign == "+" else -1
+    n = int(digits)
+    return -n if sign == "-" else n
+
+
+def _component_columns(header: list) -> dict:
+    """Localiza as colunas da aba components pelo cabeçalho (linha 1).
+
+    nome: coluna A; carga: cabeçalho com 'charge' ou 'carga'; código: 'code'/'código';
+    categorias: cabeçalhos que começam com 'categor'. Sem cabeçalho reconhecível, usa o
+    leiaute antigo (A nome, B carga, C código, D:F categorias).
+    """
+    h = [_norm(x) for x in header]
+    def find(pred):
+        return next((k for k, x in enumerate(h) if x and pred(x)), None)
+    code = find(lambda x: x in ("code", "código", "codigo"))
+    charge = find(lambda x: "charge" in x or "carga" in x)
+    cats = [k for k, x in enumerate(h) if x.startswith("categor")]
+    if code is None:
+        return {"name": 0, "charge": 1, "code": 2, "cats": [3, 4, 5]}
+    return {"name": 0, "charge": charge, "code": code, "cats": cats}
+
+
+def _read_components(ws, b: "Built") -> list:
+    """Aba components: nome, carga máxima do sistema, código e categorias (por cabeçalho)."""
+    header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+    col = _component_columns(list(header))
+    if col["charge"] is None:
+        b.log.append(("alerta", "aba components sem coluna de carga máxima ('Maximum Electrical "
+                                "Charge'/'carga'): cargas só por reserva"))
+    get = lambda row, k: row[k] if k is not None and k < len(row) else None
     out = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        name, smiles, code = row[0], row[1], row[2]
+    for r_i, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        name, qcell, code = get(row, col["name"]), get(row, col["charge"]), get(row, col["code"])
         if not name or not code:
             continue
         code = str(code).strip()
+        try:
+            qmax = _parse_charge(qcell)
+        except ValueError as exc:
+            b.log.append(("erro", f"components linha {r_i} ({str(name).strip()}): {exc}; ignorada"))
+            qmax = None
+        cats = []
+        for k in col["cats"]:
+            cell = get(row, k)
+            if cell is None or str(cell).strip() == "":
+                continue
+            cat = str(cell).strip().lower()
+            if cat not in cats:
+                cats.append(cat)
         out.append({
             "code": code,
             "name": str(name).strip(),
-            "smiles": str(smiles).strip() if smiles else None,
             "is_solvent": int(code == SOLVENT),
+            "charge_max": qmax,
+            "charge": None,
+            "charge_src": None,
+            "categories": cats,
         })
     return out
+
+
+def _count_pka(ws, b: "Built") -> dict:
+    """{código do componente: nº de pKa} pela aba pKa (metais e sistemas fictícios ignorados)."""
+    by_name = {}
+    for c in b.components:
+        by_name.setdefault(_norm(c["name"]), c["code"])
+    out = {}
+    if ws is None:
+        return out
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        name = row[0]
+        if not name:
+            continue
+        key = _norm(name)
+        if key in SKIP_SYSTEMS or METAL_RE.search(str(name)):
+            continue
+        code = by_name.get(ALIASES.get(key, key))
+        if code is None:
+            continue
+        out[code] = sum(1 for x in row[2:] if _num(x) is not None)
+    return out
+
+
+def _assign_charges(b: "Built", aq_recs: list, n_pka: dict | None = None) -> None:
+    """z_j = q_max − n_H (ver docstring do módulo)."""
+    n_h: dict = dict(n_pka or {})
+    for r in aq_recs:
+        d = dict(r["nu"])
+        if len(d) == 2 and d.get(PROTON, 0) > 0:
+            (x,) = set(d) - {PROTON}
+            if d[x] == 1:
+                n_h[x] = max(n_h.get(x, 0), d[PROTON])
+    for c in b.components:
+        code, name, q = c["code"], c["name"], c["charge_max"]
+        if code == SOLVENT:
+            c["charge"], c["charge_src"] = 0, "solvente"
+            continue
+        if code == PROTON:
+            c["charge"], c["charge_src"] = 1, "H+"
+            if q is not None and q != 1:
+                b.log.append(("alerta", f"H+ ({PROTON}): carga máxima = {q:+d}; usado +1"))
+            continue
+        nh = 0 if (METAL_RE.search(name) or CHARGE_PLUS_RE.search(name)) else n_h.get(code, 0)
+        if q is not None:
+            c["charge"], c["charge_src"] = q - nh, f"components: q_max {q:+d} − n_H {nh}"
+            continue
+        mr, mp = CHARGE_ROMAN_RE.search(name), CHARGE_PLUS_RE.search(name)
+        if mr or mp:
+            c["charge"] = ROMAN[mr.group(1)] if mr else int(mp.group(1))
+            c["charge_src"] = "reserva: nome (metal)"
+            b.log.append(("alerta", f"componente '{name}' ({code}): carga máxima vazia; carga deduzida "
+                                    f"do nome, z = {c['charge']:+d}"))
+        else:
+            b.log.append(("alerta", f"componente '{name}' ({code}): carga desconhecida; preencha a "
+                                    f"coluna de carga máxima da aba components (necessária p/ Debye–Hückel)"))
+    for c in b.components:
+        if c["charge"] is not None:
+            b.log.append(("info", f"carga {c['name']} ({c['code']}): z = {c['charge']:+d} [{c['charge_src']}]"))
+
+
+def _expand_categories(b: "Built") -> None:
+    """'all' significa presente em todas as categorias do banco. Sem categoria: alerta."""
+    real = {cat for c in b.components for cat in c["categories"] if cat != "all"}
+    for c in b.components:
+        cats = set(c["categories"])
+        if "all" in cats:
+            cats = (cats - {"all"}) | real
+        if not cats:
+            b.log.append(("alerta", f"componente {c['code']} ({c['name']}) sem categoria: aparece só em 'Todas'"))
+        c["categories"] = sorted(cats)
 
 
 def _read_explicit_species(ws, b: Built) -> list:
@@ -153,60 +305,22 @@ def _hydrolysis_series_alert(recs: list, b: Built) -> None:
                                     f"(log β_n) ou stepwise (pK sucessivos)"))
 
 
-def _generate_from_pka(ws, comp_by_name: dict, existing_nu: set, b: Built) -> list:
-    recs = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        name = row[0]
-        if not name:
-            continue
-        key = _norm(name)
-        carga = _num(row[1])
-        vals = [v for v in (_num(x) for x in row[2:]) if v is not None]
-        if key in SKIP_SYSTEMS:
-            b.log.append(("info", f"pKa '{str(name).strip()}': não é componente (ignorado)"))
-            continue
-        if METAL_RE.search(str(name)):
-            b.log.append(("info", f"pKa '{str(name).strip()}': hidrólise de metal, use a aba Species"))
-            continue
-        code = comp_by_name.get(ALIASES.get(key, key))
-        if code is None:
-            b.log.append(("alerta", f"pKa '{str(name).strip()}': sem componente correspondente"))
-            continue
-        if not vals:
-            continue
-        vals = sorted(vals)
-        n = len(vals)
-        for idx, v in enumerate(vals, start=1):
-            b.pka.append({"comp_code": code, "idx": idx, "value": v,
-                          "carga_max": int(carga) if carga is not None else None})
-        for k in range(1, n + 1):
-            nu = ((code, 1), (PROTON, k))
-            key_nu = frozenset(dict(nu).items())
-            if key_nu in existing_nu:
-                continue
-            existing_nu.add(key_nu)
-            log_beta = float(sum(vals[n - k:]))
-            recs.append({"name": f"{str(name).strip()} H{k}", "kind": "ABB", "nu": nu,
-                         "log_beta": log_beta, "log_beta_raw": log_beta,
-                         "source": "gerada:pKa", "note": f"H{k}·X de pKa {', '.join(f'{v:.3f}' for v in vals)}",
-                         "row": None})
-    return recs
-
 
 def build(xlsx_path: Path = DEFAULT_XLSX) -> Built:
     b = Built()
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
-    b.components = _read_components(_sheet(wb, "components"))
-    comp_by_name: dict = {}
-    for c in b.components:
-        comp_by_name.setdefault(_norm(c["name"]), c["code"])
+    b.components = _read_components(_sheet(wb, "components"), b)
+    _expand_categories(b)
 
     explicit = _read_explicit_species(_sheet(wb, "species"), b)
     _hydrolysis_series_alert(explicit, b)
     aq_recs = [r for r in explicit if r["kind"] != "S0"]
     cap_recs = [r for r in explicit if r["kind"] == "S0"]
-    existing_nu = {frozenset(dict(r["nu"]).items()) for r in aq_recs}
-    aq_recs += _generate_from_pka(_sheet(wb, "pka"), comp_by_name, existing_nu, b)
+    try:
+        ws_pka = _sheet(wb, "pka")
+    except Exception:
+        ws_pka = None
+    _assign_charges(b, aq_recs, _count_pka(ws_pka, b))
 
     for i, r in enumerate(aq_recs, start=1):
         r["code"] = f"SP{i:04d}"
@@ -242,8 +356,13 @@ def write_db(b: Built, db_path: Path) -> None:
     try:
         conn.executescript(SCHEMA.read_text(encoding="utf-8"))
         conn.executemany(
-            "INSERT INTO components(code, name, smiles, is_solvent) VALUES (?, ?, ?, ?)",
-            [(c["code"], c["name"], c["smiles"], c["is_solvent"]) for c in b.components],
+            "INSERT INTO components(code, name, is_solvent, charge_max, charge) VALUES (?, ?, ?, ?, ?)",
+            [(c["code"], c["name"], c["is_solvent"], c.get("charge_max"), c.get("charge"))
+             for c in b.components],
+        )
+        conn.executemany(
+            "INSERT INTO component_categories(comp_code, category) VALUES (?, ?)",
+            [(c["code"], cat) for c in b.components for cat in c["categories"]],
         )
         conn.executemany(
             "INSERT INTO species(code, name, kind, log_beta, log_beta_raw, cap_of, water_ref, source, note) "
@@ -254,10 +373,6 @@ def write_db(b: Built, db_path: Path) -> None:
         conn.executemany(
             "INSERT INTO stoich(species_code, comp_code, nu) VALUES (?, ?, ?)",
             [(s["code"], j, nu) for s in b.species for j, nu in s["nu"]],
-        )
-        conn.executemany(
-            "INSERT INTO pka(comp_code, idx, value, carga_max) VALUES (?, ?, ?, ?)",
-            [(p["comp_code"], p["idx"], p["value"], p["carga_max"]) for p in b.pka],
         )
         conn.executemany("INSERT INTO import_log(level, message) VALUES (?, ?)", b.log)
         conn.commit()
@@ -273,7 +388,7 @@ def main(argv=None) -> None:
     b = build(Path(args.xlsx))
     write_db(b, Path(args.db))
     n_alert = sum(1 for lvl, _ in b.log if lvl in ("alerta", "erro"))
-    print(f"componentes: {len(b.components)} | espécies: {len(b.species)} | pKa: {len(b.pka)} | alertas/erros: {n_alert}")
+    print(f"componentes: {len(b.components)} | espécies: {len(b.species)} | alertas/erros: {n_alert}")
     for level, msg in b.log:
         print(f"[{level}] {msg}")
 

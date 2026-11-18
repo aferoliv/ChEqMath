@@ -1,27 +1,38 @@
 """API de especiação. O front-end (frontend/) consome estes endpoints via /api/ (nginx)."""
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from typing import Literal
+
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from . import engine
-from .db import all_species, connect, list_components
-from .engine import PROTON, SOLVENT
+from .db import all_species, component_charges, connect, list_categories, list_components
+from .engine import DH_ION_SIZE, PROTON, SOLVENT, ActivityModel
 
-app = FastAPI(title="Especiação API", version="0.1.0")
+APP_VERSION = "0.3.1"   # mesma versão do pacote zip e de FRONT_VERSION em frontend/app.js
+app = FastAPI(title="Especiação API", version=APP_VERSION)
 
 VALID_KINDS = {"ABB", "complex", "S0"}
 DEFAULT_KINDS = ["ABB", "complex", "S0"]
 
 
-class SpeciateRequest(BaseModel):
+class ActivityOptions(BaseModel):
+    """Opções de atividade, comuns a todos os cálculos."""
+    activity: Literal["ideal", "dh_ext"] = "ideal"   # dh_ext = Debye–Hückel estendida
+    ion_size: float = Field(DH_ION_SIZE, gt=0, le=20)  # å padrão (Å)
+    ion_sizes: dict[str, float] | None = None          # å por código de componente/espécie
+    ionic_strength: float | None = Field(None, ge=0)   # I fixa (meio iônico); None = calculada
+
+
+class SpeciateRequest(ActivityOptions):
     totals: dict[str, float]              # mol L⁻¹; H+ (0002) pode ser negativo
     kinds: list[str] = DEFAULT_KINDS
     species_codes: list[str] | None = None
     fixed_ph: float | None = None         # se informado, H+ é fixado pelo pH
 
 
-class CurveRequest(BaseModel):
+class CurveRequest(ActivityOptions):
     totals: dict[str, float]              # ligantes/metais (sem H+)
     kinds: list[str] = DEFAULT_KINDS
     ph_min: float = 0.0
@@ -30,7 +41,7 @@ class CurveRequest(BaseModel):
     ref: str | None = None                # componente de referência para as frações
 
 
-class MCRequest(BaseModel):
+class MCRequest(ActivityOptions):
     totals: dict[str, float]
     kinds: list[str] = DEFAULT_KINDS
     fixed_ph: float | None = None
@@ -56,6 +67,18 @@ def _select(totals: dict[str, float], kinds: list[str], codes: list[str] | None 
     return engine.select_species(all_species(), allowed, kinds=kinds, codes=codes)
 
 
+def _activity(req: ActivityOptions) -> ActivityModel:
+    if req.activity == "ideal":
+        return ActivityModel()
+    return ActivityModel(
+        model="dh_ext",
+        charges=component_charges(),
+        ion_size=req.ion_size,
+        ion_sizes=dict(req.ion_sizes or {}),
+        ionic_strength=req.ionic_strength,
+    )
+
+
 def _names(species) -> dict[str, str]:
     return {s.code: s.name for s in species}
 
@@ -72,11 +95,28 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/api/components")
-def api_components():
+@app.get("/api/version")
+def api_version():
+    return {"version": APP_VERSION}
+
+
+@app.get("/api/categories")
+def api_categories():
     conn = connect()
     try:
-        return {"items": list_components(conn)}
+        return {"items": list_categories(conn)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/components")
+def api_components(categories: list[str] = Query(default=[])):
+    """Componentes filtrados pela união das categorias (sem parâmetro: todos).
+    O valor '__all__' equivale a sem filtro."""
+    cats = [c for c in categories if c and c != "__all__"]
+    conn = connect()
+    try:
+        return {"items": list_components(conn, cats or None)}
     finally:
         conn.close()
 
@@ -100,7 +140,8 @@ def api_speciate(req: SpeciateRequest):
         raise HTTPException(422, "informe ao menos um total ou um pH fixo")
     sp = _select(totals, req.kinds, req.species_codes)
     fixed = {PROTON: 10.0 ** (-req.fixed_ph)} if req.fixed_ph is not None else None
-    r = _run(lambda: engine.solve(sp, totals, fixed=fixed))
+    act = _activity(req)
+    r = _run(lambda: engine.solve(sp, totals, fixed=fixed, activity=act))
     return {
         "ph": r.ph,
         "free": r.free,
@@ -110,7 +151,14 @@ def api_speciate(req: SpeciateRequest):
         "fractions": r.fractions,
         "residual": r.residual,
         "iterations": r.iterations,
+        "converged": r.converged,
+        "message": r.message,
         "active_caps": r.active_caps,
+        "activity_model": r.activity_model,
+        "ionic_strength": r.ionic_strength,
+        "log_gamma": r.log_gamma,
+        "I_iterations": r.I_iterations,
+        "warnings": r.warnings,
         "names": _names(sp),
     }
 
@@ -127,7 +175,9 @@ def api_curve(req: CurveRequest):
     sp = _select(totals, req.kinds)
     ph_values = [req.ph_min + i * (req.ph_max - req.ph_min) / (req.ph_points - 1)
                  for i in range(req.ph_points)]
-    data = _run(lambda: engine.ph_curve(sp, totals, ph_values, ref=ref))
+    act = _activity(req)
+    data = _run(lambda: engine.ph_curve(sp, totals, ph_values, ref=ref, activity=act))
+    data["activity_model"] = act.model
     data["names"] = _names(sp)
     return data
 
@@ -140,6 +190,9 @@ def api_mc(req: MCRequest):
         raise HTTPException(422, "informe ao menos um total ou um pH fixo")
     sp = _select(totals, req.kinds)
     fixed = {PROTON: 10.0 ** (-req.fixed_ph)} if req.fixed_ph is not None else None
-    res = _run(lambda: engine.monte_carlo(sp, totals, fixed=fixed, sd=req.sd, n=req.n, seed=req.seed))
+    act = _activity(req)
+    res = _run(lambda: engine.monte_carlo(sp, totals, fixed=fixed, sd=req.sd, n=req.n, seed=req.seed,
+                                          activity=act))
+    res["activity_model"] = act.model
     res["names"] = _names(sp)
     return res

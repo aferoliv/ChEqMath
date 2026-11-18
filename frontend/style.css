@@ -23,3 +23,33 @@ main { display: grid; grid-template-columns: 340px 1fr; gap: 16px; padding: 16px
 table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: .85rem; }
 th, td { border-bottom: 1px solid #e2e8f0; padding: 4px 6px; text-align: left; }
 @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+.add-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin-bottom: 6px; }
+.add-row select { min-width: 0; padding: 4px; }
+.add-row button { padding: 4px 10px; border: 0; border-radius: 6px; background: #0f766e; color: #fff; cursor: pointer; }
+.add-row button:hover { background: #115e59; }
+.dropdown { position: relative; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
+.dropdown > summary { padding: 5px 8px; cursor: pointer; font-size: .9rem; list-style: none; }
+.dropdown > summary::after { content: "▾"; float: right; }
+.dropdown[open] > summary::after { content: "▴"; }
+.dd-box { max-height: 220px; overflow-y: auto; border-top: 1px solid #e2e8f0; padding: 4px 8px; }
+.dd-box label { display: block; font-size: .88rem; margin: 3px 0; }
+.comp-list .row { grid-template-columns: 1fr 90px 24px; }
+.comp-list .row .rm { border: 0; background: none; color: #b91c1c; cursor: pointer; padding: 0; }
+.bar-ctrl { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: .88rem; margin-bottom: 6px; }
+.bar-ctrl input[type=number] { width: 110px; }
+tr.warn td { color: #b91c1c; font-weight: 600; background: #fef2f2; }
+/* layout responsivo: 3 colunas (≥1280px) | 2 colunas (820–1279px) | 1 coluna (<820px) */
+main.layout { grid-template-columns: 320px 230px minmax(0, 1fr); align-items: start; }
+.col-left, .col-mid { align-self: start; }
+.big-btn { display: block; width: 100%; padding: 14px; margin-bottom: 14px; font-size: 1.05rem; font-weight: 600; border: 0; border-radius: 8px; background: #0f766e; color: #fff; cursor: pointer; }
+.big-btn:hover { background: #115e59; }
+@media (max-width: 1280px) {
+  main.layout { grid-template-columns: 300px minmax(0, 1fr); }
+  .col-mid { grid-column: 1; grid-row: 2; }
+  .results { grid-column: 2; grid-row: 1 / span 2; }
+}
+@media (max-width: 820px) {
+  main.layout { grid-template-columns: minmax(0, 1fr); }
+  .col-left, .col-mid, .results { grid-column: 1; grid-row: auto; }
+}
+.warn-msg { color: #b91c1c; font-weight: 600; }

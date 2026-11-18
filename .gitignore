@@ -3,3 +3,12 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .env
+
+# Google Drive (recria em toda pasta, inclusive dentro de .git)
+desktop.ini
+# travas temporárias do Excel
+~$*.xlsx
+# pacote gerado para distribuição
+cheqmath.zip
+# página de exercícios avulsa, fora do app
+data/index.html

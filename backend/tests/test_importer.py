@@ -15,7 +15,7 @@ def built():
 
 
 def test_counts(built):
-    assert len(built.components) == 90
+    assert len(built.components) == 93
     assert sum(1 for c in built.components if c["is_solvent"]) == 1
     assert len({c["code"] for c in built.components}) == len(built.components)
 
@@ -28,14 +28,14 @@ def test_species_ids_unique(built):
 def test_hydroxide_value_loaded_as_in_sheet(built):
     # Constante usada como está na planilha (coluna log K). Erro é corrigido na planilha.
     oh = next(s for s in built.species if s["name"] == "hydroxyl")
-    assert oh["log_beta"] == pytest.approx(-15.75)
-    assert oh["log_beta_raw"] == pytest.approx(-15.75)
+    assert oh["log_beta"] == pytest.approx(oh["log_beta_raw"])
+    assert oh["log_beta"] == pytest.approx(-15.75, abs=0.01)
 
 
 def test_cadmium_series_loaded_as_in_sheet(built):
-    # Coluna log K da planilha (corrigida): Cd(OH)2 cumulativo = -20,35
+    # Coluna log K da planilha (com água incorporada): Cd(OH)2 = -23,84 (a_água = 1 → -20,35)
     rec = next(s for s in built.species if s["name"] == "Cd(OH)2(0)" and s["kind"] == "ABB")
-    assert rec["log_beta"] == pytest.approx(-20.35)
+    assert rec["log_beta"] == pytest.approx(-23.84, abs=0.01)
     assert any(lvl == "alerta" and "Cd(OH)2(0)" in msg for lvl, msg in built.log)
 
 
@@ -58,17 +58,9 @@ def test_acetic_acid_not_duplicated(built):
     assert hits[0]["source"] == "planilha:Species"
 
 
-def test_alanine_protonation_from_pka(built):
-    # pKa = 2,348 e 9,867 (ordem crescente): log β1 = 9,867; log β2 = 12,215
-    h1 = next(s for s in built.species if dict(s["nu"]) == {"0006": 1, PROTON: 1})
-    h2 = next(s for s in built.species if dict(s["nu"]) == {"0006": 1, PROTON: 2})
-    assert h1["log_beta"] == pytest.approx(9.867)
-    assert h2["log_beta"] == pytest.approx(12.215)
-
-
-def test_metal_hydrolysis_not_generated_from_pka(built):
-    # Ca(2+) tem pKa na aba pKa, mas não deve gerar espécies protonadas
-    assert not any("0017" in dict(s["nu"]) for s in built.species if s["source"].startswith("gerada"))
+def test_pka_sheet_not_used(built):
+    # A aba pKa é apenas de apoio: nenhuma espécie é gerada a partir dela.
+    assert all(s["source"] == "planilha:Species" for s in built.species)
 
 
 def test_all_stoich_codes_exist(built):
@@ -93,3 +85,57 @@ def test_write_db_roundtrip(built, tmp_path):
     conn.close()
     assert n_sp == len(built.species)
     assert n_st == sum(len(s["nu"]) for s in built.species)
+
+
+# --- carga dos componentes: coluna B = carga máxima do sistema ----------------------
+
+@pytest.mark.parametrize("txt, z", [
+    ("2+", 2), ("+", 1), ("-", -1), ("3-", -3), ("+2", 2), ("-1", -1), ("0", 0),
+    ("−", -1), (" 2 + ", 2), (2.0, 2), (-1, -1), (None, None), ("", None),
+])
+def test_parse_charge(txt, z):
+    from app.importer import _parse_charge
+    assert _parse_charge(txt) == z
+
+
+@pytest.mark.parametrize("bad", ["2+-", "+-", "abc", "1.5", 1.5])
+def test_parse_charge_invalid(bad):
+    from app.importer import _parse_charge
+    with pytest.raises(ValueError):
+        _parse_charge(bad)
+
+
+def test_charge_from_charge_column(tmp_path):
+    """Coluna de carga máxima (achada pelo cabeçalho) = carga da espécie totalmente protonada;
+    z = q_max − n_H."""
+    import openpyxl
+    from app.importer import _component_columns
+    wb = openpyxl.load_workbook(XLSX)
+    ws = next(w for w in wb.worksheets if w.title.lower().startswith("components"))
+    col = _component_columns([c.value for c in ws[1]])
+    assert col["charge"] is not None
+    qcol = {"0019": "2+", "0038": "+", "0003": "0", "0030": "+", "0044": "-", "0029": "2+",
+            "0002": "+", "0001": "0"}
+    for row in ws.iter_rows(min_row=2):
+        code = row[col["code"]].value
+        if code is not None and str(code).strip() in qcol:
+            row[col["charge"]].value = qcol[str(code).strip()]
+    path = tmp_path / "plan.xlsx"
+    wb.save(path)
+    b = build(path)
+    z = {c["code"]: c["charge"] for c in b.components}
+    assert z["0019"] == 2      # Cd(II): metal → z = q_max
+    assert z["0038"] == -1     # glicina: +1 − 2 pKa
+    assert z["0003"] == -1     # acetato: 0 − 1
+    assert z["0030"] == 0      # etanolamina: +1 − 1
+    assert z["0044"] == -1     # fluoreto: sem pKa → z = q_max
+    assert z["0029"] == -4     # EDTA: +2 − 6
+    assert z[PROTON] == 1 and z[SOLVENT] == 0
+
+
+def test_component_columns_by_header():
+    from app.importer import _component_columns
+    new = ["Components", "Maximum Electrical Charge", "SMILES", "code", "category 1", "category 2", "category 3"]
+    assert _component_columns(new) == {"name": 0, "charge": 1, "code": 3, "cats": [4, 5, 6]}
+    old = ["Components", "SMILES", "code", "category 1", "category 2", "category 3"]
+    assert _component_columns(old) == {"name": 0, "charge": None, "code": 2, "cats": [3, 4, 5]}

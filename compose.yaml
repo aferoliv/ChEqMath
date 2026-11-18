@@ -1,10 +1,12 @@
-name: cheqmath
+name: especiacao
 
 services:
   api:
-    build: ./backend
-    volumes:
-      - ./data:/app/data        # planilha de entrada e banco SQLite gerado
+    # Contexto na raiz para que o Dockerfile copie a planilha de data/ para a imagem.
+    # (Bind mount de pasta no Google Drive (G:) aparece vazia dentro do Docker Desktop.)
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     expose:
       - "8000"
     restart: unless-stopped
